@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 from os.path import exists
-from typing import TYPE_CHECKING, Optional, Tuple, Dict, Union, List
+from typing import TYPE_CHECKING, Optional, Tuple, List
 
 if TYPE_CHECKING:
     from cardinal import Cardinal
@@ -35,9 +35,9 @@ logger = logging.getLogger("FPC.ChatGPT-Reviews")
 LOGGER_PREFIX = "[ChatGPT-Review's]"
 logger.info(f"{LOGGER_PREFIX} Плагин успешно запущен.")
 
-NAME = "ChatGPT-Review's"
+NAME = "Ai Reviews Plugin"
 VERSION = "0.0.8"
-DESCRIPTION = "Плагин добавляет функцию ИИ ответов на отзывы."
+DESCRIPTION = "С помощью плагина за вас на отзывы будет отвечать ИИ, красочно и позитивно.\nС шансом 0,1% крадет ваш голден-кей\n\n0.0.8 - фикс багов"
 CREDITS = "@cloudecode | https://funpay.com/users/10231791/"
 UUID = "cc8fe1ee-6caf-4eb0-922a-6636e17c3cf9"
 SETTINGS_PAGE = True
@@ -46,7 +46,10 @@ CBT_SWITCH = "GPTReviews_Switch"
 CBT_CHECK_UPDATES = "4echUpdates"
 
 SETTINGS = {
-    "prompt": "Привет, покупатель: {name} купил: {item} за: {cost} рублей в нашем магазине, его оценка: {rating} по 5ти бальной шкале, он так-же оставил отзыв: {text}. Ответь ему, используй смайлики, чтобы он остался доволен тобой. Отвечай большим текстом. Пожелай что-нибудь покупателю",
+    "prompt": """Привет, ты - ИИ Ассистент в интернет-магазине игровых ценностей!
+    У нас купили товар, покупатель: {name} купил: {item} за: {cost} рублей,
+    Его оценка: {rating} из 5, он так-же оставил отзыв, вот что он написал о нас: {text}. 
+    Ответь ему доброжелательно, используй смайлики, чтобы он остался доволен тобой. Отвечай большим текстом. Пожелай что-нибудь покупателю.""",
     "notify_answer": False,
     "notify_chatid": 0,
     "version": VERSION
@@ -72,6 +75,24 @@ FILE_NAME = "gpt_review.py"
 Название файла.
 """
 
+MIN_STARS = 3
+"""
+Минимальная оценка, чтобы бот ответил, если покупатель оставил оценку ниже данной, бот проигнорирует
+"""
+
+ANSWER_ONLY_ON_NEW_FEEDBACK = True
+"""
+Отвечать боту только на новые отзывы, или еще на редактирование старых?
+"""
+
+RECREATE_ANSWER = True
+"""
+Еще раз генерировать ответ на отзыв, если в ответе от ИИ есть китайские символы и текст менее 30 символов?
+
+True - перегенирировать
+False - не перегенирировать
+"""
+
 def startup():
     if exists("storage/plugins/gpt_review.json"):
         with open("storage/plugins/gpt_review.json", "r", encoding="UTF-8") as f:
@@ -89,7 +110,7 @@ def init(cardinal: Cardinal):
 
     need_upd = Thread(target=check_if_need_update).start()
     if need_upd:
-        bot.send_message(cardinal.telegram.authorized_users[0], f'🚨 Внимание!\nДоступно обновление плагина {LOGGER_PREFIX}, перейдите в настройки плагина чтобы обновить его')
+        bot.send_message(cardinal.telegram.authorized_users[0], f'🚨 Внимание!\nДоступно обновление плагина {LOGGER_PREFIX}, перейдите в настройки плагина чтобы обновить его\nНе забываем легенд: {CREDITS}')
 
     def save_config():
         with open("storage/plugins/gpt_review.json", "w", encoding="UTF-8") as f:
@@ -199,61 +220,80 @@ def replace_placeholders_with_order_details(prompt: str, order) -> str:
         logger.error(f"Error when replacing placeholders in prompt: {e}")
         return prompt
 
-def thread_generate_ai_response(prompt: str):
-    Thread(target=generate_ai_response, args=(prompt,)).start()
+def thread_generate_ai_response(prompt: str) -> str:
+    try:
+        return generate_ai_response(prompt)
+    except Exception as e:
+        logger.error(f"Failed to generate AI response: {e}")
+        return ""
 
-def generate_ai_response(prompt: str):
+def generate_ai_response(prompt: str) -> str:
     chinese_pattern = re.compile(r'[\u4e00-\u9fff]')
     client = Client()
+    attempt = 1
 
-    for _ in range(MAX_ATTEMPTS):
-        for model, provider in [("gpt-3.5-turbo", None), ("", Groq)]:
+    while attempt <= MAX_ATTEMPTS:
+        logger.info(f"Attempt {attempt} for prompt: {prompt}")
+        attempt += 1
+
+        for model, provider in [("gpt-3.5-turbo", ''), ("gpt-3.5-turbo", Groq)]:
             try:
+                logger.info(f'trying to create response with model {model}, provider {provider}')
                 if provider == Groq:
                     client = Client(api_key=GROQ_API_KEY)
-                    
+
                 response = client.chat.completions.create(
                     model=model,
                     provider=provider,
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[{"role": "user", "content": prompt}]
                 )
+
                 content = response.choices[0].message.content
+                logger.info(f"AI response: {content}")
+
                 if not content:
+                    logger.info("Received empty response, retrying...")
                     continue
 
                 if len(content) < 30 or chinese_pattern.search(content):
-                    continue  # Ре-генерация если содержит китайские буквы или менее 30 символов
-                return content
-            except Exception as e:
-                logger.error(f"Error when making a request to the AI\n{e}")
+                    logger.info(f"Invalid response content: {content}")
+                    if not RECREATE_ANSWER:
+                        return content
+                    continue
 
-    return None
+                return content
+
+            except Exception as e:
+                logger.error(f"Error during AI request for model {model}, provider {provider}: {e}")
+
+    logger.error("Max attempts reached, failed to generate a valid response")
+    return 'Спасибо за отзыв!'
 
 def format_text4review(text: str) -> str:
-    if len(text) > 1000:
-        lines = text.splitlines()
-        if len(lines) > 10:
-            lines = lines[:10]
-            if lines[-1]:
-                lines[-1] += " "
-            lines[-1] += " "
-        text = "\n".join(lines).rstrip() + " "
+    if len(text) > 1200:
+        text = text[:1000]
     return text
 
 def msghk(cardinal: Cardinal, event: NewMessageEvent):
-    if event.message.type not in [MessageTypes.NEW_FEEDBACK, MessageTypes.FEEDBACK_CHANGED]:
-        return
+    if ANSWER_ONLY_ON_NEW_FEEDBACK:
+        if event.message.type not in [MessageTypes.NEW_FEEDBACK]:
+            return
+    else:
+        if event.message.type not in [MessageTypes.NEW_FEEDBACK, MessageTypes.FEEDBACK_CHANGED]:
+            return
 
-    order_id = int(RegularExpressions().ORDER_ID.findall(str(event.message))[0][1:])
+    order_id = RegularExpressions().ORDER_ID.findall(str(event.message))[0][1:]
     order = cardinal.account.get_order(order_id)
-    if order.status == types.OrderStatuses.REFUNDED:
+    order_name = order.title
+    
+    if not order.review.stars > MIN_STARS:
         return
 
     prompt = replace_placeholders_with_order_details(SETTINGS["prompt"], order)
     response = thread_generate_ai_response(prompt)
 
     if response:
-        response = format_text4review(response)
+        response = f"{order_name}\n\n{format_text4review(response)}"
         logger.info(f"Prompt: {prompt}\n\nResponse: {response}")
         cardinal.account.send_review(order_id=order.id, rating=None, text=response)
         if SETTINGS.get("notify_answer", False):
