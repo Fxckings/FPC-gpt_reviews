@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 from os.path import exists
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from cardinal import Cardinal
 from FunPayAPI.updater.events import *
@@ -12,19 +13,29 @@ from tg_bot import CBT
 from telebot.types import InlineKeyboardMarkup as K, InlineKeyboardButton as B
 from cardinal import Cardinal
 import logging
-from g4f.client import Client
-from g4f.Provider import Groq
 
-groqapi= "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"
-client = Client(api_key=groqapi)
+try:
+    import g4f
+    from g4f.client import Client
+    from g4f.Provider import Groq
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "g4f"])
+    importlib.import_module("g4f")
+    import g4f
+    from g4f.client import Client
+    from g4f.Provider import Groq
+    
+import subprocess, sys
+import importlib
+from threading import Thread
+import re
 
-logger = logging.getLogger("FPC.ChatGPT-Review's")
+logger = logging.getLogger("FPC.ChatGPT-Reviews")
 LOGGER_PREFIX = "[ChatGPT-Review's]"
-in_progress = False
 logger.info(f"{LOGGER_PREFIX} Плагин успешно запущен.")
 
 NAME = "ChatGPT-Review's"
-VERSION = "0.0.7"
+VERSION = "0.0.8"
 DESCRIPTION = "Плагин добавляет функцию ИИ ответов на отзывы."
 CREDITS = "@cloudecode"
 UUID = "cc8fe1ee-6caf-4eb0-922a-6636e17c3cf9"
@@ -39,18 +50,25 @@ SETTINGS = {
     "version": VERSION
 }
 
+GROQ_API_KEY = "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"
+"""
+Апи ключ с грока, нужен, но не обязателен, если не будет его, то не будет работать грок.
+"""
+
 def init(cardinal: Cardinal):
     tg = cardinal.telegram
     bot = tg.bot
+    Thread(target=startup).start()
 
-    if exists("storage/plugins/gpt_review.json"):
-        with open("storage/plugins/gpt_review.json", "r", encoding="UTF-8") as f:
-            global SETTINGS
-            SETTINGS = json.loads(f.read())
-            version_cfg = SETTINGS.get("version")
-            if version_cfg != VERSION:
-                with open("storage/plugins/gpt_review.json", "w", encoding="UTF-8") as f:
-                    f.write(json.dumps(SETTINGS, indent=4, ensure_ascii=False))
+    def startup():
+        if exists("storage/plugins/gpt_review.json"):
+            with open("storage/plugins/gpt_review.json", "r", encoding="UTF-8") as f:
+                global SETTINGS
+                SETTINGS = json.loads(f.read())
+                version_cfg = SETTINGS.get("version")
+                if version_cfg != VERSION:
+                    with open("storage/plugins/gpt_review.json", "w", encoding="UTF-8") as f:
+                        f.write(json.dumps(SETTINGS, indent=4, ensure_ascii=False))
 
     def save_config():
         with open("storage/plugins/gpt_review.json", "w", encoding="UTF-8") as f:
@@ -89,10 +107,10 @@ def init(cardinal: Cardinal):
 
     def settings(call: telebot.types.CallbackQuery):
         keyboard = K()
-        keyboard.add(B(f"Сменить ПРОМПТ", callback_data=CBT_PROMPT_CHANGE))
+        keyboard.add(B(f"Сменить промпт", callback_data=CBT_PROMPT_CHANGE))
         keyboard.add(B(f"Уведомления отвеченных отзывах {'🟢' if SETTINGS['notify_answer'] else '🔴'}", callback_data=f"{CBT_SWITCH}:notify_answer"))
         keyboard.row(B("◀️ Назад", callback_data=f"{CBT.EDIT_PLUGIN}:{UUID}:0"))
-        bot.edit_message_text("В данном разделе вы можете настроить плагин", call.message.chat.id, call.message.id, reply_markup=keyboard)
+        bot.edit_message_text(f"В данном разделе вы можете настроить плагин\nЖоски кодер: {CREDITS}", call.message.chat.id, call.message.id, reply_markup=keyboard)
         bot.answer_callback_query(call.id)
 
     tg.cbq_handler(toggle_notif, lambda c: f"{CBT_SWITCH}:notify_answer" in c.data)
@@ -101,7 +119,7 @@ def init(cardinal: Cardinal):
     tg.cbq_handler(change_prompt, lambda c: f"{CBT_PROMPT_CHANGE}" in c.data)
 
 def replace_placeholders_with_order_details(prompt: str, order) -> str:
-    logger.debug(f"gpt-review: {prompt}")
+    logger.debug(f"{prompt}")
 
     replacements = {
         "{category}": order.subcategory.name,
@@ -118,60 +136,67 @@ def replace_placeholders_with_order_details(prompt: str, order) -> str:
             prompt = prompt.replace(placeholder, replacement)
         return prompt
     except KeyError as e:
-        logger.error(f"gpt-review: Error when replacing placeholders in prompt: {e}")
+        logger.error(f"Error when replacing placeholders in prompt: {e}")
         return prompt
 
+def thread_generate_ai_response(prompt: str):
+    Thread(target=generate_ai_response, args=(prompt,)).start()
 
 def generate_ai_response(prompt: str):
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        logger.error(f"gpt-review: Error when making a request to the AI\n{e}\nRetrying in 0 seconds...")
-        try:
-            response = client.chat.completions.create(
-                model="",
-	            messages=[{"role": "user", "content": prompt}],
-                provider=Groq
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            logger.error(f"gpt-review: Error when making a request to the AI\n{e}")
+    chinese_pattern = re.compile(r'[\u4e00-\u9fff]')
+    client = Client()
+    max_attempts = 5
 
-def format_text4review(text_: str):
-    if len(text_) > 1000:
-        lines = text_.splitlines()
+    for _ in range(max_attempts):
+        for model, provider, client in [("gpt-3.5-turbo", None), ("", Groq)]:
+            try:
+                if provider == Groq:
+                    client = Client(api_key=GROQ_API_KEY)
+                    
+                response = client.chat.completions.create(
+                    model=model,
+                    provider=provider,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                content = response.choices[0].message.content
+                if len(content) < 30 or chinese_pattern.search(content):
+                    continue  # Ре-генерация если содержит китайские буквы или менее 30 символов
+                return content
+            except Exception as e:
+                logger.error(f"Error when making a request to the AI\n{e}")
+
+    return None
+
+def format_text4review(text: str) -> str:
+    if len(text) > 1000:
+        lines = text.splitlines()
         if len(lines) > 10:
             lines = lines[:10]
             if lines[-1]:
                 lines[-1] += " "
             lines[-1] += " "
-        text_ = "\n".join(lines).rstrip() + " "
-    return text_
+        text = "\n".join(lines).rstrip() + " "
+    return text
 
-def message_hook(cardinal: Cardinal, event: NewMessageEvent):
+def msghk(cardinal: Cardinal, event: NewMessageEvent):
     if event.message.type not in [MessageTypes.NEW_FEEDBACK, MessageTypes.FEEDBACK_CHANGED]:
         return
 
-    order_id = RegularExpressions().ORDER_ID.findall(str(event.message))[0][1:]
+    order_id = int(RegularExpressions().ORDER_ID.findall(str(event.message))[0][1:])
     order = cardinal.account.get_order(order_id)
     if order.status == types.OrderStatuses.REFUNDED:
         return
 
     prompt = replace_placeholders_with_order_details(SETTINGS["prompt"], order)
-    ai_response = generate_ai_response(prompt)
+    response = thread_generate_ai_response(prompt)
 
-    if ai_response:
-        ai_response = format_text4review(ai_response)
-        logger.info(f"Prompt: {prompt}\n\nResponse: {ai_response}")
-        cardinal.account.send_review(order_id=order.id, rating=None, text=ai_response)
+    if response:
+        response = format_text4review(response)
+        logger.info(f"Prompt: {prompt}\n\nResponse: {response}")
+        cardinal.account.send_review(order_id=order.id, rating=None, text=response)
         if SETTINGS.get("notify_answer", False):
-            chat_id = SETTINGS.get("notify_chatid")
-            cardinal.telegram.bot.send_message(chat_id, f"💻 Успешно ответил на отзыв:\n\n🤖 {ai_response}")
+            cardinal.telegram.bot.send_message(SETTINGS.get("notify_chatid"), f"💻 Успешно ответил на отзыв:\n\n🤖 {response}")
             
 BIND_TO_PRE_INIT = [init]
-BIND_TO_NEW_MESSAGE = [message_hook]
+BIND_TO_NEW_MESSAGE = [msghk]
 BIND_TO_DELETE = None
