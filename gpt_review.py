@@ -38,7 +38,7 @@ logger.info(f"{LOGGER_PREFIX} Плагин успешно запущен.")
 NAME = "ChatGPT-Review's"
 VERSION = "0.0.8"
 DESCRIPTION = "Плагин добавляет функцию ИИ ответов на отзывы."
-CREDITS = "@cloudecode"
+CREDITS = "@cloudecode | https://funpay.com/users/10231791/"
 UUID = "cc8fe1ee-6caf-4eb0-922a-6636e17c3cf9"
 SETTINGS_PAGE = True
 CBT_PROMPT_CHANGE = "GPTReviews_CHANGE"
@@ -72,6 +72,16 @@ FILE_NAME = "gpt_review.py"
 Название файла.
 """
 
+def startup():
+    if exists("storage/plugins/gpt_review.json"):
+        with open("storage/plugins/gpt_review.json", "r", encoding="UTF-8") as f:
+            global SETTINGS
+            SETTINGS = json.loads(f.read())
+            version_cfg = SETTINGS.get("version")
+            if version_cfg != VERSION:
+                with open("storage/plugins/gpt_review.json", "w", encoding="UTF-8") as f:
+                    f.write(json.dumps(SETTINGS, indent=4, ensure_ascii=False))
+
 def init(cardinal: Cardinal):
     tg = cardinal.telegram
     bot = tg.bot
@@ -80,16 +90,6 @@ def init(cardinal: Cardinal):
     need_upd = Thread(target=check_if_need_update).start()
     if need_upd:
         bot.send_message(cardinal.telegram.authorized_users[0], f'🚨 Внимание!\nДоступно обновление плагина {LOGGER_PREFIX}, перейдите в настройки плагина чтобы обновить его')
-
-    def startup():
-        if exists("storage/plugins/gpt_review.json"):
-            with open("storage/plugins/gpt_review.json", "r", encoding="UTF-8") as f:
-                global SETTINGS
-                SETTINGS = json.loads(f.read())
-                version_cfg = SETTINGS.get("version")
-                if version_cfg != VERSION:
-                    with open("storage/plugins/gpt_review.json", "w", encoding="UTF-8") as f:
-                        f.write(json.dumps(SETTINGS, indent=4, ensure_ascii=False))
 
     def save_config():
         with open("storage/plugins/gpt_review.json", "w", encoding="UTF-8") as f:
@@ -134,6 +134,10 @@ def init(cardinal: Cardinal):
             bot.answer_callback_query(call.id, text=update_message)
 
             if "обновлен до версии" not in update_message:
+                return
+            
+            if "Она является последним релизом" in update_message:
+                bot.send_message(call.message.chat.id, "🚨 У вас уже установленна последняя версия плагина.")
                 return
 
             file_path = os.path.abspath(__file__)
