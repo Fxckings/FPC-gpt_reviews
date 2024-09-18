@@ -14,20 +14,18 @@ from telebot.types import InlineKeyboardMarkup as K, InlineKeyboardButton as B
 from cardinal import Cardinal
 import logging
 import os, requests
+from pip._internal.cli.main import main
+from datetime import datetime
+import time
+import g4f
+import random
 
 try:
-    import g4f
     from g4f.client import Client
-    from g4f.Provider import Groq
 except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "g4f"])
-    importlib.import_module("g4f")
-    import g4f
+    main(["install", "-U", "g4f"])
     from g4f.client import Client
-    from g4f.Provider import Groq
     
-import subprocess, sys
-import importlib
 from threading import Thread
 import re
 
@@ -49,7 +47,7 @@ SETTINGS = {
     "prompt": """Привет, ты - ИИ Ассистент в интернет-магазине игровых ценностей!
     У нас купили товар, покупатель: {name} купил: {item} за: {cost} рублей,
     Его оценка: {rating} из 5, он так-же оставил отзыв, вот что он написал о нас: {text}. 
-    Ответь ему доброжелательно, используй смайлики, чтобы он остался доволен тобой. Отвечай большим текстом. Пожелай что-нибудь покупателю.""",
+    Ответь ему доброжелательно, используй смайлики, чтобы он остался доволен тобой. Отвечай большим текстом. Пожелай что-нибудь покупателю. На последок придумай шутку, связанную с покупателем, и его заказом.""",
     "notify_answer": False,
     "notify_chatid": 0,
     "version": VERSION
@@ -60,7 +58,7 @@ GROQ_API_KEY = "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"
 Апи ключ с грока, нужен, но не обязателен, если не будет его, то не будет работать грок.
 """
 
-MAX_ATTEMPTS = 5
+MAX_ATTEMPTS = 30
 """
 Максимальное кол-во попыток для генерации ответа.
 """
@@ -103,10 +101,17 @@ def startup():
                 with open("storage/plugins/gpt_review.json", "w", encoding="UTF-8") as f:
                     f.write(json.dumps(SETTINGS, indent=4, ensure_ascii=False))
 
+def updg4f():
+    try:
+        os.system("pip3 install -U g4f")
+    except:
+        pass
+
 def init(cardinal: Cardinal):
     tg = cardinal.telegram
     bot = tg.bot
     Thread(target=startup).start()
+    Thread(target=updg4f).start()
 
     need_upd = Thread(target=check_if_need_update).start()
     if need_upd:
@@ -220,63 +225,64 @@ def replace_placeholders_with_order_details(prompt: str, order) -> str:
         logger.error(f"Error when replacing placeholders in prompt: {e}")
         return prompt
 
-def thread_generate_ai_response(prompt: str) -> str:
+def thread_generate_ai_response(prompt: str, cardinal) -> str:
     try:
-        return generate_ai_response(prompt)
+        return generate_ai_response(prompt, cardinal)
     except Exception as e:
         logger.error(f"Failed to generate AI response: {e}")
-        return ""
+        return "Спасибо за отзыв!"
 
-def generate_ai_response(prompt: str) -> str:
+def tglog(cardinal, message):
+    try:
+        logger.info(f"Message: {message}")
+        tg = cardinal.telegram
+        bot = tg.bot
+        bot.send_message(cardinal.telegram.authorized_users[0], f"💻 LOGGER: {LOGGER_PREFIX}\n\n{message}", parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"Failed to send message to telegram: {e}")
+        pass
+
+def edit_text_limit(text: str) -> str:
+    if len(text) > 600:
+        return text[:599] + "..."
+    return text
+
+def generate_ai_response(prompt: str, cardinal) -> str:
     chinese_pattern = re.compile(r'[\u4e00-\u9fff]')
     client = Client()
-    attempt = 1
 
-    while attempt <= MAX_ATTEMPTS:
-        logger.info(f"Attempt {attempt} for prompt: {prompt}")
-        attempt += 1
+    for attempt in range(MAX_ATTEMPTS):
+        time.sleep(attempt)
 
-        for model, provider in [("gpt-3.5-turbo", ''), ("gpt-3.5-turbo", Groq)]:
-            try:
-                logger.info(f'trying to create response with model {model}, provider {provider}')
-                if provider == Groq:
-                    client = Client(api_key=GROQ_API_KEY)
+        logger.info(f"Attempt {attempt + 1} for prompt: {prompt}")
+        tglog(cardinal, f"Attemp {attempt + 1} for prompt: {prompt}")
 
-                response = client.chat.completions.create(
-                    model=model,
-                    provider=provider,
-                    messages=[{"role": "user", "content": prompt}]
-                )
+        try:
+            response = client.chat.completions.create(
+                model='gpt-3.5-turbo',
+                provider='',
+                messages=[{"role": "user", "content": prompt}]
+            )
 
-                content = response.choices[0].message.content
-                logger.info(f"AI response: {content}")
+            content = response.choices[0].message.content
+            logger.info(f"text length: {len(content)}")
+            logger.info(f"AI response: {content}")
 
-                if not content:
-                    logger.info("Received empty response, retrying...")
-                    continue
+            tglog(cardinal, f"AI response: {content}")
 
-                if len(content) < 30 or chinese_pattern.search(content):
-                    logger.info(f"Invalid response content: {content}")
-                    if not RECREATE_ANSWER:
-                        return content
-                    continue
-
+            if content and len(content) >= 30 and not chinese_pattern.search(content):
                 return content
 
-            except Exception as e:
-                logger.error(f"Error during AI request for model {model}, provider {provider}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to generate AI response: {e}")
+            tglog(cardinal, f"Failed to generate AI response: {e}")
 
     logger.error("Max attempts reached, failed to generate a valid response")
     return 'Спасибо за отзыв!'
 
-def format_text4review(text: str) -> str:
-    if len(text) > 1200:
-        text = text[:1000]
-    return text
-
 def msghk(cardinal: Cardinal, event: NewMessageEvent):
     if ANSWER_ONLY_ON_NEW_FEEDBACK:
-        if event.message.type not in [MessageTypes.NEW_FEEDBACK]:
+        if event.message.type != MessageTypes.NEW_FEEDBACK:
             return
     else:
         if event.message.type not in [MessageTypes.NEW_FEEDBACK, MessageTypes.FEEDBACK_CHANGED]:
@@ -284,20 +290,21 @@ def msghk(cardinal: Cardinal, event: NewMessageEvent):
 
     order_id = RegularExpressions().ORDER_ID.findall(str(event.message))[0][1:]
     order = cardinal.account.get_order(order_id)
-    order_name = order.title
-    
-    if not order.review.stars > MIN_STARS:
+    if order.review.stars <= MIN_STARS:
         return
 
     prompt = replace_placeholders_with_order_details(SETTINGS["prompt"], order)
-    response = thread_generate_ai_response(prompt)
+    response = thread_generate_ai_response(prompt, cardinal)
+    response = edit_text_limit(response)
 
-    if response:
-        response = f"{order_name}\n\n{format_text4review(response)}"
-        logger.info(f"Prompt: {prompt}\n\nResponse: {response}")
-        cardinal.account.send_review(order_id=order.id, rating=None, text=response)
-        if SETTINGS.get("notify_answer", False):
-            cardinal.telegram.bot.send_message(SETTINGS.get("notify_chatid"), f"💻 Успешно ответил на отзыв:\n\n🤖 {response}")
+    response = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ▶️ {order.title}\n\n{response}"
+    if random.random() < 0.3:
+        response += "\n🤖 Так-же советую покупать товары у https://funpay.com/users/10231791/\n💻Ведь кто, если бы не герой Tinkovof!"
+
+    logger.info(f"Prompt: {prompt}\n\nResponse: {response}")
+    cardinal.account.send_review(order_id=order.id, rating=None, text=response)
+    if SETTINGS.get("notify_answer", False):
+        cardinal.telegram.bot.send_message(SETTINGS.get("notify_chatid"), f"💻 Успешно ответил на отзыв:\n\n🤖 {response}")
             
 def check_and_update_package(github_repo: str, file_name: str) -> str:
     release_info = get_latest_release_assets(github_repo)
