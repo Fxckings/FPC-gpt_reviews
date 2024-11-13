@@ -91,7 +91,8 @@ def log(text: str):
 
 def tg_log(cardinal: Cardinal, text: str):
     for user in cardinal.telegram.authorized_users:
-        cardinal.send_message(user, text, parse_mode="HTML")
+        bot = cardinal.telegram.bot
+        bot.send_message(user, text, parse_mode="HTML")
 
 def save_settings_file():
     with open("storage/plugins/GPTseller.json", "w", encoding="UTF-8") as f:
@@ -115,6 +116,7 @@ def init(cardinal: Cardinal):
 
     CBT_GROQ_API_KEY = "prompt_change"
     CBT_HTTP_PROXY = "http_proxy_change"
+    CBT_BACK = "back"
 
     if not SETTINGS["groq_api_key"] or not SETTINGS["http_proxy"]:
         tg_log(cardinal, f'⚠️ Плагин {NAME} <b>не полностью работает</b>. <a href="https://t.me/Proxysoxybot?start=r_686229">Купите прокси</a> и/или <a href="https://console.groq.com/keys">получите грок API ключ</a> и установите его в настройках.')
@@ -148,12 +150,12 @@ def init(cardinal: Cardinal):
         bot.answer_callback_query(call.id)
 
     def edit_groq_api(call: telebot.types.CallbackQuery):
-        if call.data == f"{CBT.PLUGIN_SETTINGS}:{UUID}:0" or call.data == f"{CBT.PLUGIN_SETTINGS}:{UUID}:back":
+        if call.data == f"{CBT.PLUGIN_SETTINGS}:{UUID}:0" or call.data == CBT_BACK:
             return
         bot.answer_callback_query(call.id)
 
         keyboard = K()
-        keyboard.add(B("◀️ Назад", callback_data=f"{CBT.PLUGIN_SETTINGS}:{UUID}:back"))
+        keyboard.add(B("◀️ Назад", callback_data=CBT_BACK))
 
         msg = bot.send_message(
             call.message.chat.id,
@@ -173,7 +175,7 @@ def init(cardinal: Cardinal):
             tg.clear_state(message.chat.id, message.from_user.id, True)
 
             keyboard = K()
-            keyboard.add(B("◀️ Назад", callback_data=f"{CBT.PLUGIN_SETTINGS}:{UUID}:back"))
+            keyboard.add(B("◀️ Назад", callback_data=f"{CBT.PLUGIN_SETTINGS}:{UUID}:0"))
 
             bot.reply_to(
                 message,
@@ -201,7 +203,7 @@ def init(cardinal: Cardinal):
         bot.answer_callback_query(call.id)
         
         keyboard = K()
-        keyboard.add(B("◀️ Назад", callback_data=f"{CBT.PLUGIN_SETTINGS}:{UUID}:0"))
+        keyboard.add(B("◀️ Назад", callback_data=CBT_BACK))
 
         msg = bot.send_message(
             call.message.chat.id,
@@ -248,11 +250,10 @@ def init(cardinal: Cardinal):
             bot.reply_to(message, f"❌ Ошибка: {e}")
 
     def back_handler(call: telebot.types.CallbackQuery):
-        if call.data == f"{CBT.PLUGIN_SETTINGS}:{UUID}:back":
-            tg.clear_state(call.message.chat.id, call.from_user.id, True)
-            settings(call)
+        tg.clear_state(call.message.chat.id, call.from_user.id, True)
+        settings(call)
 
-    tg.cbq_handler(back_handler, lambda c: f"{CBT.PLUGIN_SETTINGS}:{UUID}:back" in c.data)
+    tg.cbq_handler(back_handler, lambda c: CBT_BACK in c.data)
     tg.cbq_handler(edit_http_proxy, lambda c: CBT_HTTP_PROXY in c.data)
     tg.cbq_handler(settings, lambda c: f"{CBT.PLUGIN_SETTINGS}:{UUID}" in c.data)
     tg.cbq_handler(edit_groq_api, lambda c: CBT_GROQ_API_KEY in c.data)
