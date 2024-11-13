@@ -350,6 +350,8 @@ def message_handler(cardinal: Cardinal, event: NewMessageEvent) -> None:
         response: str = g4f_generate_response(prompt)
 
         response: str = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ▶️ {order.title}\n\n{response}"
+        if len(response) > 800:
+            response = response[:800]
         cardinal.account.send_review(order_id=order.id, rating=None, text=response)
 
         if SEND_IN_CHAT:
