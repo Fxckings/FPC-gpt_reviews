@@ -19,14 +19,16 @@ import          logging
 
 try:
     from g4f.client import Client
+    from groq import DefaultHttpxClient, Groq
     import curl_cffi
     import nodriver
-    from groq import DefaultHttpxClient, Groq
+
 except ImportError:
     main(["install", "-U", "curl_cffi"])
     main(["install", "-U", "g4f"])
     main(["install", "-U", "nodriver"])
     main(["install", "-U", "groq"])
+
     from g4f.client import Client
     from groq import DefaultHttpxClient, Groq
 
@@ -35,9 +37,9 @@ LOGGER_PREFIX = "[ChatGPT-Review's]"
 logger.info(f"{LOGGER_PREFIX} Плагин успешно запущен.")
 
 NAME = "ChatGPT Reviews"
-VERSION = "0.0.12"
+VERSION = "0.0.13"
 DESCRIPTION = "С помощью плагина за вас на отзывы будет отвечать ИИ, красочно и позитивно."
-CREDITS = "@cloudecode | https://funpay.com/users/10231791/ | @tinkovof"
+CREDITS = "@fasxw | https://funpay.com/users/10231791/ | @tinkovof"
 UUID = "cc8fe1ee-6caf-4eb0-922a-6636e17c3cf9"
 SETTINGS_PAGE = True
 
@@ -86,10 +88,10 @@ class GroqModels(Enum):
     llama32_3b = "llama-3.2-3b-preview"
     llama31_8b_instant = "llama-3.1-8b-instant"
 
-def log(text: str):
+def log(text: str) -> None:
     logger.info(f"{LOGGER_PREFIX} {text}")
 
-def tg_log(cardinal: Cardinal, text: str):
+def tg_log(cardinal: Cardinal, text: str) -> None:
     for user in cardinal.telegram.authorized_users:
         bot = cardinal.telegram.bot
         bot.send_message(user, text, parse_mode="HTML")
@@ -101,7 +103,7 @@ def save_settings_file():
 
 def load_setting_file() -> dict:
     try:
-        with open("storage/plugins/gpt_reviews.json", "r", encoding="utf-8") as f:
+        with open("storage/plugins/GPTseller.json", "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
         save_settings_file()
@@ -112,6 +114,7 @@ def init(cardinal: Cardinal):
     
     tg = cardinal.telegram
     bot = tg.bot
+
     SETTINGS = load_setting_file()
 
     CBT_GROQ_API_KEY = "groq_api_key_change"
@@ -137,7 +140,7 @@ def init(cardinal: Cardinal):
             "But it didn't really last long\n"
             "And she's getting older\n"
             "I guess she's gotta cut her blue hair off\n\n"
-            f"Если че пишите: {CREDITS}"
+            f"⚠️ Если чета важное пишите: {CREDITS}"
         )
 
         bot.edit_message_text(
@@ -289,14 +292,32 @@ def need_regenerate(content: str) -> bool:
 
         if (
             "Unable to decode JSON response⁡" in content or
-            "Model not found or too long input. Or any other error (xD)" in content
-            or "Request ended with status code 404⁡" in content
+            "Model not found or too long input. Or any other error (xD)" in content or
+            "Request ended with status code" in content
         ):
             return True
         
         return False
+
     except Exception:
         return False
+
+def generate(prompt: str) -> str:
+    global SETTINGS
+
+    try:
+        if SETTINGS["groq_api_key"]:
+            response = groq_generate_response(prompt)
+        else:
+            response = g4f_generate_response(prompt)
+
+        if not response:
+            return "Спасибо за покупочку!"
+        return response
+
+    except Exception as e:
+        logger.error(f"Error generating response: {e}")
+        return "Спасибо за покупочку!)"
 
 def groq_generate_response(prompt: str) -> str:
     global SETTINGS
@@ -339,7 +360,7 @@ def g4f_generate_response(prompt: str) -> str:
         except Exception as e:
             logger.error(f"Error in attempt: {e}")
     
-    return groq_generate_response(prompt)
+    return
 
 def message_handler(cardinal: Cardinal, event: NewMessageEvent) -> None:
     try:
@@ -357,7 +378,7 @@ def message_handler(cardinal: Cardinal, event: NewMessageEvent) -> None:
             return
 
         prompt: str = replace_items(SETTINGS["prompt"], order)
-        response: str = g4f_generate_response(prompt)
+        response: str = generate(prompt)
 
         response: str = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ▶️ {order.title}\n\n{response}"
         if len(response) > 800:
@@ -367,10 +388,11 @@ def message_handler(cardinal: Cardinal, event: NewMessageEvent) -> None:
         if SEND_IN_CHAT:
             chat_id: int = event.message.chat_id
             prompt: str = f"""
-            Привет, у нас, на маркетплейсе игровых ценностей, пользователь {order.buyer_username} купил товар. 
-            Пожелай ему что-нибудь, поблагадари его за покупку, используй смайлики. Напиши текст на ~500 символов.
-            Не упоминай лишнего, только по делу."""
-            response: str = g4f_generate_response(prompt)
+            Привет, у нас (мы продавец, наше имя: {order.seller_username}), на маркетплейсе игровых ценностей, пользователь {order.buyer_username} купил товар: {order.title} на сумму: {order.sum}{order.currency}. 
+            Придумай ему сообщение в чат. Пожелай ему что-нибудь, поблагадари его за покупку. Напиши текст на ~500 символов.
+            Не упоминай лишнего, только по делу.
+            """
+            response: str = generate(prompt)
             if response:
                 cardinal.send_message(chat_id, response)
 
