@@ -322,7 +322,7 @@ def generate(prompt: str) -> str:
 def groq_generate_response(prompt: str) -> str:
     global SETTINGS
 
-    client = Groq(api_key=SETTINGS["groq_api_key"], timeout=10, http_client=DefaultHttpxClient(proxies=SETTINGS["http_proxy"]))
+    client = Groq(api_key=SETTINGS["groq_api_key"], timeout=10)
     models = list(GroqModels)
     model = random.choice(models)
 
